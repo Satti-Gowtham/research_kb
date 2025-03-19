@@ -1,0 +1,36 @@
+[
+    {
+        "name": "research_kb",
+        "module": {
+            "name": "research_kb",
+            "description": "Research Knowledge Base",
+            "parameters": "{func_name: str, func_input_data: dict}",
+            "module_type": "kb",
+            "module_version": "v0.1",
+            "module_entrypoint": "run.py",
+            "execution_type": "package"
+        },
+        "node": {"ip": "127.0.0.1"},
+        "config": {
+            "llm_config": {"config_name": "embedding_model_1"},
+            "storage_config": {
+                "storage_type": "db",
+                "path": "research_kb",
+                "options": {
+                    "query_col": "text",
+                    "answer_col": "text",
+                    "embedding_col": "embedding"
+                },
+                "storage_schema": {
+                    "id": {"type": "INTEGER", "primary_key": true},
+                    "run_id": {"type": "TEXT"},
+                    "topic": {"type": "TEXT"},
+                    "content": {"type": "JSONB"},
+                    "agent_id": {"type": "TEXT"},
+                    "timestamp": {"type": "TIMESTAMP"},
+                    "metadata": {"type": "JSONB"}
+                }
+            }
+        }
+    }
+]

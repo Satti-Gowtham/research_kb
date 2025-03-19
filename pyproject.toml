@@ -1,0 +1,26 @@
+[tool.poetry]
+name = "research_kb"
+version = "0.1.0"
+description = "A research knowledge base for storing and retrieving findings."
+authors = ["Gowtham Satti <sattigowtham1999@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.10,<=3.13"
+naptha-sdk = {git = "https://github.com/NapthaAI/naptha-sdk.git"}
+pydantic = "^2.9.2"
+pandas = "^2.2.3"
+pyarrow = "^18.1.0"
+tqdm = "^4.67.1"
+aiohttp = "^3.9.3"
+numpy = "^2.2.2"
+
+
+#[tool.poetry.group.production.dependencies]
+#naptha-sdk = {git = "https://github.com/NapthaAI/naptha-sdk.git"}
+ollama = "^0.4.7"
+langchain-ollama = "^0.2.3"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
