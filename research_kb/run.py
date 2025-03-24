@@ -1,167 +1,271 @@
-import pytz
-from typing import Dict, Any
-from datetime import datetime
-import json
-import uuid
-from naptha_sdk.schemas import KBRunInput
-from naptha_sdk.storage.storage_client import StorageClient
-from naptha_sdk.storage.schemas import (
-    CreateStorageRequest, 
-    ReadStorageRequest, 
-    DeleteStorageRequest,
-    ListStorageRequest
-)
-from naptha_sdk.user import sign_consumer_id, get_private_key_from_pem
-from naptha_sdk.utils import get_logger
 from dotenv import load_dotenv
-
 from research_kb.schemas import InputSchema
+import random
+from typing import Dict, Any, List
+from naptha_sdk.schemas import KBRunInput, KBDeployment
+from naptha_sdk.storage.schemas import CreateStorageRequest, ReadStorageRequest, ListStorageRequest, DeleteStorageRequest, DatabaseReadOptions
+from naptha_sdk.storage.storage_client import StorageClient
+from naptha_sdk.user import sign_consumer_id
+from naptha_sdk.utils import get_logger
+from research_kb.utils.embeddings import OllamaEmbedder
+from research_kb.utils.chunker import SemanticChunker
+import json
+import math
+from datetime import datetime
+import pytz
 
 load_dotenv()
-
 logger = get_logger(__name__)
 
 class ResearchKB:
-    """Research Knowledge Base for storing research findings."""
-    
     def __init__(self, deployment: Dict[str, Any]):
-        self.storage_provider = StorageClient(deployment.node)
-        
-        # Set up storage options
-        storage_config = deployment.config.storage_config
-        self.storage_type = storage_config.storage_type
-        self.table_name = storage_config.path
-        self.research_schema = storage_config.storage_schema
-        
-    async def initialize(self, *args, **kwargs) -> Dict[str, Any]:
-        """Initialize the research knowledge base"""
-        try:
-            # Check if table exists, create if not
-            if not await self.table_exists(self.table_name):
-                logger.info(f"Creating table: {self.table_name}")
-                # Create research table
-                create_request = CreateStorageRequest(
-                    storage_type=self.storage_type,
-                    path=self.table_name,
-                    data={"schema": self.research_schema}
-                )
-                await self.storage_provider.execute(create_request)
-                
-            return {"status": "success", "message": "Research knowledge base initialized"}
-        except Exception as e:
-            logger.error(f"Error initializing research knowledge base: {str(e)}")
-            return {"status": "error", "message": str(e)}
-            
-    async def table_exists(self, table_name: str) -> bool:
-        """Check if a table exists"""
-        try:
-            list_request = ListStorageRequest(
-                storage_type=self.storage_type,
-                path=table_name
-            )
-            await self.storage_provider.execute(list_request)
-            return True
-        except Exception:
-            return False
+        self.deployment = deployment
+        self.config = self.deployment.config
+        self.storage_client = StorageClient(self.deployment.node)
+        self.storage_type = self.config.storage_config.storage_type
+        self.table_name = self.config.storage_config.path
+        self.schema = self.config.storage_config.storage_schema
+        self.chunks_table = f"{self.table_name}_chunks"
+        self.chunks_schema = {
+            "id": {"type": "INTEGER", "primary_key": True},
+            "run_id": {"type": "TEXT"},
+            "text": {"type": "TEXT"},
+            "embedding": {"type": "VECTOR", "dimension": 768},
+            "start": {"type": "INTEGER"},
+            "ends_at": {"type": "INTEGER"},
+            "content_type": {"type": "TEXT"},
+        }
+        self.embedder = OllamaEmbedder(
+            model="nomic-embed-text",
+            url="http://localhost:11434"
+        )
+        self.chunker = SemanticChunker()
 
-    async def ingest_knowledge(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """ Store research findings in the knowledge base """
+    async def init(self, *args, **kwargs):
+        """Initialize the knowledge base tables."""
         try:
-            await self.initialize()
-            
-            knowledge_data = {
-                "run_id": input_data.get("run_id"),
-                "topic": input_data.get("topic"),
-                "content": input_data.get("content"),
-                "agent_id": input_data.get("agent_id"),
-                "round": input_data.get("round"),
-                "timestamp": datetime.now(pytz.UTC).isoformat()
-            }
-
+            # Create main table
             create_request = CreateStorageRequest(
                 storage_type=self.storage_type,
                 path=self.table_name,
-                data={"data": knowledge_data}
+                options={"schema": self.schema}
             )
-
-            result = await self.storage_provider.execute(create_request)
+            await self.storage_client.execute(create_request)
             
-            if not result.data:
-                return {"status": "error", "message": "Failed to store research finding"}
-                
-            return {
-                "status": "success",
-                "id": knowledge_data["run_id"]
-            }
-            
-        except Exception as e:
-            logger.error(f"Error storing research finding: {str(e)}")
-            return {"status": "error", "message": str(e)}
-
-    async def get_findings(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """ Retrieve research findings based on filters """
-        try:
-            await self.initialize()
-            
-            read_request = ReadStorageRequest(
+            # Create chunks table
+            chunks_request = CreateStorageRequest(
                 storage_type=self.storage_type,
-                path=self.table_name,
-                options={"conditions": [input_data]}
+                path=self.chunks_table,
+                options={"schema": self.chunks_schema}
             )
+            await self.storage_client.execute(chunks_request)
             
-            results = await self.storage_provider.execute(read_request)
-            
-            return {
-                "status": "success",
-                "data": results.data
-            }
-            
+            return {"status": "success", "message": f"Successfully initialized tables {self.table_name} and {self.chunks_table}"}
         except Exception as e:
-            logger.error(f"Error retrieving research findings: {str(e)}")
+            logger.error(f"Error initializing tables: {str(e)}")
             return {"status": "error", "message": str(e)}
-
-    async def get_by_id(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """ Retrieve a specific research finding by ID """
+    
+    async def add_data(self, input_data: Dict[str, Any], *args, **kwargs):
+        """Add data to the knowledge base with embeddings."""
+        await self.init()
         try:
-            read_request = ReadStorageRequest(
+            logger.info(f"Adding data to table {self.table_name}")
+            # Prepare findings text
+            findings_text = " ".join([
+                f"{finding.get('section', '')}: {', '.join(finding.get('points', []))}"
+                for finding in input_data.get('findings', [])
+            ])
+
+            # Add timestamp
+            input_data['timestamp'] = datetime.now(pytz.UTC).isoformat()
+
+            # Check if run_id already exists
+            read_result = await self.storage_client.execute(ReadStorageRequest(
                 storage_type=self.storage_type,
                 path=self.table_name,
                 options={"conditions": [{"run_id": input_data["run_id"]}]}
-            )
-            result = await self.storage_provider.execute(read_request)
-            return {"status": "success", "data": result.data}
-        except Exception as e:
-            logger.error(f"Error retrieving research finding by ID: {str(e)}")
-            return {"status": "error", "message": str(e)}
+            ))
 
-    async def clear(self, *args, **kwargs) -> Dict[str, Any]:
-        """ Clear all data from the knowledge base """
-        try:
-            delete_request = DeleteStorageRequest(
+            if len(read_result.data) > 0:
+                return {"status": "error", "message": f"Run {input_data['run_id']} already exists in table {self.table_name}"}
+
+            # Create new entry
+            create_row_result = await self.storage_client.execute(CreateStorageRequest(
                 storage_type=self.storage_type,
                 path=self.table_name,
-                options={}
-            )
-            await self.storage_provider.execute(delete_request)
+                data={"data": input_data}
+            ))
+
+            # Create chunks for findings
+            if findings_text:
+                findings_chunks = self.chunker.chunk(findings_text)
+                for chunk in findings_chunks:
+                    chunk_embedding = await self.embedder.embed_text(chunk["text"])
+                    chunk_data = {
+                        "run_id": input_data["run_id"],
+                        "text": chunk["text"],
+                        "embedding": chunk_embedding,
+                        "start": chunk["start"],
+                        "ends_at": chunk["end"],
+                        "content_type": "findings",
+                        "metadata": {
+                            "round": input_data.get("metadata", {}).get("round", 0),
+                            "section": "findings"
+                        }
+                    }
+                    await self.storage_client.execute(CreateStorageRequest(
+                        storage_type=self.storage_type,
+                        path=self.chunks_table,
+                        data={"data": chunk_data}
+                    ))
+
+            logger.info(f"Successfully added data to table {self.table_name}")
+            return {"status": "success", "message": f"Successfully added data to table {self.table_name}"}
             
-            return {"status": "success", "message": "Knowledge base cleared"}
         except Exception as e:
-            logger.error(f"Error clearing knowledge base: {str(e)}")
+            logger.error(f"Error adding data: {str(e)}")
             return {"status": "error", "message": str(e)}
 
-async def run(module_run: Dict[str, Any], *args, **kwargs) -> Dict[str, Any]:
-    """ Run the Research Knowledge Base deployment """
+    async def get_relevant_context(self, input_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Get relevant context based on semantic similarity to the query."""
+        await self.init()
+        try:
+            # Get query embedding
+            query = input_data["query"]
+            query_embedding = await self.embedder.embed_text(query)
+            if not query_embedding:
+                logger.error("Failed to generate embedding for query")
+                return []
+
+            # Set up vector search options
+            chunks_db_options = DatabaseReadOptions(
+                query_vector=query_embedding,
+                query_col="embedding",
+                answer_col="text",
+                top_k=input_data.get("limit", 3),
+                include_similarity=True
+            )
+
+            # Search chunks
+            chunks_read_request = ReadStorageRequest(
+                storage_type=self.storage_type,
+                path=self.chunks_table,
+                options=chunks_db_options.model_dump()
+            )
+            
+            chunk_results = await self.storage_client.execute(chunks_read_request)
+            
+            if not chunk_results.data:
+                return []
+
+            # Calculate proper similarity scores and filter results
+            filtered_chunks = []
+            for chunk in chunk_results.data:
+                if "embedding" in chunk:
+                    emb = chunk["embedding"]
+                    if isinstance(emb, str):
+                        try:
+                            if emb.startswith('[') and emb.endswith(']'):
+                                emb = json.loads(emb)
+                            else:
+                                emb = [float(x) for x in emb.split(',')]
+                        except Exception:
+                            continue
+                    elif isinstance(emb, (list, tuple)):
+                        try:
+                            emb = [float(x) for x in emb]
+                        except Exception:
+                            continue
+                    elif hasattr(emb, 'tolist'):
+                        try:
+                            emb = emb.tolist()
+                        except Exception:
+                            continue
+                            
+                    if emb is not None:
+                        # Calculate similarity score using the enhanced method
+                        similarity_score = self.embedder.calculate_similarity(
+                            query_embedding, 
+                            emb,
+                            query=query,
+                            text=chunk["text"]
+                        )
+                        
+                        chunk["similarity_score"] = similarity_score
+                        filtered_chunks.append(chunk)
+
+            # Sort by similarity
+            filtered_chunks.sort(key=lambda x: x["similarity_score"], reverse=True)
+            
+            # Get the main entries for these chunks
+            run_ids = list(set(chunk["run_id"] for chunk in filtered_chunks))
+            main_entries = await self.storage_client.execute(ReadStorageRequest(
+                storage_type=self.storage_type,
+                path=self.table_name,
+                options={"condition": {"run_id": {"$in": run_ids}}}
+            ))
+
+            # Combine results
+            results = []
+            for chunk in filtered_chunks:
+                for entry in main_entries.data:
+                    if chunk["run_id"] == entry["run_id"]:
+                        results.append({
+                            'similarity': chunk['similarity_score'],
+                            'findings': entry.get('findings', []),
+                            'metadata': entry.get('metadata', {}),
+                            'chunk': chunk['text']
+                        })
+                        break
+
+            return results[:input_data.get("limit", 3)]
+            
+        except Exception as e:
+            logger.error(f"Error getting relevant context: {str(e)}")
+            return []
+
+    async def list_rows(self, input_data: Dict[str, Any], *args, **kwargs):
+        """List rows from the knowledge base."""
+        await self.init()
+        try:
+            list_storage_request = ListStorageRequest(
+                storage_type=self.storage_type,
+                path=self.table_name,
+                options={"limit": input_data.get('limit') if input_data and 'limit' in input_data else None}
+            )
+            list_storage_result = await self.storage_client.execute(list_storage_request)
+            return {"status": "success", "data": list_storage_result.data["data"]}
+        except Exception as e:
+            logger.error(f"Error listing rows: {str(e)}")
+            return {"status": "error", "message": str(e)}
+
+    async def delete_table(self, input_data: Dict[str, Any], *args, **kwargs):
+        """Delete the knowledge base table."""
+        try:
+            delete_table_request = DeleteStorageRequest(
+                storage_type=self.storage_type,
+                path=input_data['table_name'],
+            )
+            await self.storage_client.execute(delete_table_request)
+
+            delete_chunks_request = DeleteStorageRequest(
+                storage_type=self.storage_type,
+                path=f"{input_data['table_name']}_chunks",
+            )
+            await self.storage_client.execute(delete_chunks_request)
+            return {"status": "success", "message": "Table deleted successfully"}
+        except Exception as e:
+            logger.error(f"Error deleting table: {str(e)}")
+            return {"status": "error", "message": str(e)}
+
+async def run(module_run: Dict):
+    """Main entry point for the module."""
     try:
         module_run = KBRunInput(**module_run)
         module_run.inputs = InputSchema(**module_run.inputs)
         research_kb = ResearchKB(module_run.deployment)
-
         method = getattr(research_kb, module_run.inputs.func_name, None)
-        if not method:
-            raise ValueError(f"Invalid function name: {module_run.inputs.func_name}")
-
-        result = await method(module_run.inputs.func_input_data)
-        return {"status": "success", "results": [json.dumps(result)]}
+        return await method(module_run.inputs.func_input_data)
     except Exception as e:
         logger.error(f"Error in run: {str(e)}")
         return {
@@ -176,108 +280,57 @@ if __name__ == "__main__":
     from naptha_sdk.configs import setup_module_deployment
     import os
 
-    async def main():
-        """Example of how to use the Research KB module"""
-        if not os.getenv("NODE_URL"):
-            print("Please set NODE_URL environment variable to run this script directly")
-            return
+    naptha = Naptha()
 
-        try:
-            # Initialize Naptha client
-            naptha = Naptha()
-            
-            # Set up deployment
-            deployment = await setup_module_deployment(
-                "kb",
-                "research_kb/configs/deployment.json",
-                node_url=os.getenv("NODE_URL")
-            )
+    deployment = asyncio.run(setup_module_deployment("kb", "./research_kb/configs/deployment.json", node_url = os.getenv("NODE_URL")))
 
-            # Create test data
-            test_data = {
-                "run_id": "test_run_001",
-                "topic": "AI in Healthcare",
-                "content": "AI is revolutionizing healthcare by improving diagnosis accuracy and treatment planning.",
-                "agent_id": "agent_1",
-                "round": 1
+    inputs_dict = {
+        "adding_data": {
+            "func_name": "add_data",
+            "func_input_data": {
+                "run_id": "123",
+                "findings": [
+                    {
+                        "section": "findings",
+                        "points": ["Point 1", "Point 2", "Point 3"]
+                    }
+                ],
+                "metadata": {
+                    "round": 1,
+                    "topic": "What are the implications of synthetic life?"
+                }
             }
+        },
+        "listing_rows": {
+            "func_name": "list_rows",
+            "func_input_data": {
+                "limit": 10
+            }
+        },
+        "deleting_table": {
+            "func_name": "delete_table",
+            "func_input_data": {
+                "table_name": "research_kb"
+            }
+        },
+        "getting_relevant_context": {
+            "func_name": "get_relevant_context",
+            "func_input_data": {
+                "query": "What are the implications of synthetic life?"
+            }
+        },
+        "initializing_tables": {
+            "func_name": "init",
+            "func_input_data": {}
+        }
+    }
+    module_run = {
+        "inputs": inputs_dict["initializing_tables"],
+        "deployment": deployment,
+        "consumer_id": naptha.user.id,
+        "signature": sign_consumer_id(naptha.user.id, os.getenv("PRIVATE_KEY"))
+    }
 
-            # Test 1: Initialize KB
-            print("\n1. Testing KB initialization...")
-            init_result = await run({
-                "deployment": deployment,
-                "consumer_id": naptha.user.id,
-                "signature": sign_consumer_id(naptha.user.id, get_private_key_from_pem(os.getenv("PRIVATE_KEY"))),
-                "inputs": {
-                    "func_name": "initialize",
-                    "func_input_data": {}
-                }
-            })
-            print(f"Initialization result: {json.dumps(init_result, indent=2)}")
+    response = asyncio.run(run(module_run))
 
-            # Test 2: Store research finding
-            print("\n2. Testing research finding storage...")
-            store_result = await run({
-                "deployment": deployment,
-                "consumer_id": naptha.user.id,
-                "signature": sign_consumer_id(naptha.user.id, get_private_key_from_pem(os.getenv("PRIVATE_KEY"))),
-                "inputs": {
-                    "func_name": "ingest_knowledge",
-                    "func_input_data": test_data
-                }
-            })
-            print(f"Storage result: {json.dumps(store_result, indent=2)}")
-
-            # Test 3: Retrieve finding by ID
-            if store_result["status"] == "success":
-                stored_id = json.loads(store_result["results"][0])["id"]
-                print("\n3. Testing retrieval by ID...")
-                retrieve_result = await run({
-                    "deployment": deployment,
-                    "consumer_id": naptha.user.id,
-                    "signature": sign_consumer_id(naptha.user.id, get_private_key_from_pem(os.getenv("PRIVATE_KEY"))),
-                    "inputs": {
-                        "func_name": "get_by_id",
-                        "func_input_data": {
-                            "run_id": stored_id
-                        }
-                    }
-                })
-            print(f"Retrieval result: {json.dumps(retrieve_result, indent=2)}")
-
-            # Test 4: Get findings with filters
-            print("\n4. Testing filtered retrieval...")
-            filter_result = await run({
-                "deployment": deployment,
-                "consumer_id": naptha.user.id,
-                "signature": sign_consumer_id(naptha.user.id, get_private_key_from_pem(os.getenv("PRIVATE_KEY"))),
-                "inputs": {
-                    "func_name": "get_findings",
-                    "func_input_data": {
-                        "run_id": 'test_run_001',
-                        "topic": 'AI in Healthcare'
-                    }
-                }
-            })
-            print(f"Filtered retrieval result: {json.dumps(filter_result, indent=2)}")
-
-            # Test 5: Clear KB
-            print("\n5. Testing KB clearing...")
-            clear_result = await run({
-                "deployment": deployment,
-                "consumer_id": naptha.user.id,
-                "signature": sign_consumer_id(naptha.user.id, get_private_key_from_pem(os.getenv("PRIVATE_KEY"))),
-                "inputs": {
-                    "func_name": "clear",
-                    "func_input_data": {}
-                }
-            })
-            print(f"Clear result: {json.dumps(clear_result, indent=2)}")
-
-            print("\nAll tests completed successfully!")
-
-        except Exception as e:
-            print(f"\nError during testing: {str(e)}")
-            raise e
-
-    asyncio.run(main())
+    print("Response: ", response)

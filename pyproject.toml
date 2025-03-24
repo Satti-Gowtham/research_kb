@@ -20,6 +20,7 @@ numpy = "^2.2.2"
 #naptha-sdk = {git = "https://github.com/NapthaAI/naptha-sdk.git"}
 ollama = "^0.4.7"
 langchain-ollama = "^0.2.3"
+scipy = "^1.15.2"
 
 [build-system]
 requires = ["poetry-core"]

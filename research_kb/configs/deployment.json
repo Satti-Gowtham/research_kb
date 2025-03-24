@@ -12,7 +12,6 @@
         },
         "node": {"ip": "127.0.0.1"},
         "config": {
-            "llm_config": {"config_name": "embedding_model_1"},
             "storage_config": {
                 "storage_type": "db",
                 "path": "research_kb",
@@ -24,13 +23,12 @@
                 "storage_schema": {
                     "id": {"type": "INTEGER", "primary_key": true},
                     "run_id": {"type": "TEXT"},
-                    "topic": {"type": "TEXT"},
-                    "content": {"type": "JSONB"},
-                    "agent_id": {"type": "TEXT"},
-                    "timestamp": {"type": "TIMESTAMP"},
-                    "metadata": {"type": "JSONB"}
+                    "findings": {"type": "JSONB"},
+                    "metadata": {"type": "JSONB"},
+                    "timestamp": {"type": "TIMESTAMP"}
                 }
             }
         }
     }
 ]
+
