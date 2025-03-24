@@ -1,6 +1,5 @@
 from dotenv import load_dotenv
 from research_kb.schemas import InputSchema
-import random
 from typing import Dict, Any, List
 from naptha_sdk.schemas import KBRunInput, KBDeployment
 from naptha_sdk.storage.schemas import CreateStorageRequest, ReadStorageRequest, ListStorageRequest, DeleteStorageRequest, DatabaseReadOptions
@@ -10,7 +9,6 @@ from naptha_sdk.utils import get_logger
 from research_kb.utils.embeddings import OllamaEmbedder
 from research_kb.utils.chunker import SemanticChunker
 import json
-import math
 from datetime import datetime
 import pytz
 
@@ -36,8 +34,8 @@ class ResearchKB:
             "content_type": {"type": "TEXT"},
         }
         self.embedder = OllamaEmbedder(
-            model="nomic-embed-text",
-            url="http://localhost:11434"
+            model=self.config.llm_config.model,
+            url=self.config.llm_config.url
         )
         self.chunker = SemanticChunker()
 
@@ -89,7 +87,6 @@ class ResearchKB:
             if len(read_result.data) > 0:
                 return {"status": "error", "message": f"Run {input_data['run_id']} already exists in table {self.table_name}"}
 
-            # Create new entry
             create_row_result = await self.storage_client.execute(CreateStorageRequest(
                 storage_type=self.storage_type,
                 path=self.table_name,
@@ -183,7 +180,6 @@ class ResearchKB:
                             continue
                             
                     if emb is not None:
-                        # Calculate similarity score using the enhanced method
                         similarity_score = self.embedder.calculate_similarity(
                             query_embedding, 
                             emb,
@@ -197,7 +193,6 @@ class ResearchKB:
             # Sort by similarity
             filtered_chunks.sort(key=lambda x: x["similarity_score"], reverse=True)
             
-            # Get the main entries for these chunks
             run_ids = list(set(chunk["run_id"] for chunk in filtered_chunks))
             main_entries = await self.storage_client.execute(ReadStorageRequest(
                 storage_type=self.storage_type,
