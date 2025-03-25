@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from research_kb.research_kb.schemas import InputSchema
+from research_kb.schemas import InputSchema
 from typing import Dict, Any, List
 from naptha_sdk.schemas import KBRunInput, KBDeployment
 from naptha_sdk.storage.schemas import CreateStorageRequest, ReadStorageRequest, ListStorageRequest, DeleteStorageRequest, DatabaseReadOptions
