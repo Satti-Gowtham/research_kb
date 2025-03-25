@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from research_kb.schemas import InputSchema
+from research_kb.research_kb.schemas import InputSchema
 from typing import Dict, Any, List
 from naptha_sdk.schemas import KBRunInput, KBDeployment
 from naptha_sdk.storage.schemas import CreateStorageRequest, ReadStorageRequest, ListStorageRequest, DeleteStorageRequest, DatabaseReadOptions
@@ -35,7 +35,7 @@ class ResearchKB:
         }
         self.embedder = OllamaEmbedder(
             model=self.config.llm_config.model,
-            url=self.config.llm_config.url
+            url=self.config.llm_config.api_base
         )
         self.chunker = SemanticChunker()
 
@@ -76,16 +76,6 @@ class ResearchKB:
 
             # Add timestamp
             input_data['timestamp'] = datetime.now(pytz.UTC).isoformat()
-
-            # Check if run_id already exists
-            read_result = await self.storage_client.execute(ReadStorageRequest(
-                storage_type=self.storage_type,
-                path=self.table_name,
-                options={"conditions": [{"run_id": input_data["run_id"]}]}
-            ))
-
-            if len(read_result.data) > 0:
-                return {"status": "error", "message": f"Run {input_data['run_id']} already exists in table {self.table_name}"}
 
             create_row_result = await self.storage_client.execute(CreateStorageRequest(
                 storage_type=self.storage_type,
@@ -284,6 +274,7 @@ if __name__ == "__main__":
             "func_name": "add_data",
             "func_input_data": {
                 "run_id": "123",
+                "topic": "What are the implications of synthetic life?",
                 "findings": [
                     {
                         "section": "findings",

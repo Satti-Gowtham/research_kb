@@ -12,6 +12,7 @@
         },
         "node": {"ip": "127.0.0.1"},
         "config": {
+            "llm_config": {"config_name": "embedding_model_1"},
             "storage_config": {
                 "storage_type": "db",
                 "path": "research_kb",
